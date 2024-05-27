@@ -33,8 +33,9 @@ await avif.init();
 
 
 // encode image file (File Object) into Uint8Array
+// Uint8Array - https://developer.mozilla.org/en-US/docs/Web/API/Uint8Array
 const array = await avif.encode(
-    file, // File Object
+    file, // File Object - https://developer.mozilla.org/en-US/docs/Web/API/File
     {
         quality: 60,
         speed: 4,
@@ -45,7 +46,7 @@ const array = await avif.encode(
 // OR
 // encode ImageData into Uint8Array
 const array = await avif.encode_from_pixels(
-    pixels, // ImageData Object
+    pixels, // ImageData Object - https://developer.mozilla.org/en-US/docs/Web/API/ImageData
     {
         quality: 60,
         speed: 4,

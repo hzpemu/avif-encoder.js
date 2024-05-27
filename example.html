@@ -16,8 +16,6 @@
             const avif = new Avif();
             await avif.init();
 
-            // let a = wasm.run();
-            // console.log(a);
 
             const input = $('#file');
             input.addEventListener('change', async _=> {
@@ -31,7 +29,7 @@
                 let data = await avif.encode(
                     input.files[0],
                     {
-                        quality: 70,
+                        quality: 60,
                         speed: 4,
                         debug: true
                     }

@@ -1,6 +1,6 @@
 
 // set false for release version
-const DEBUG = true;
+const DEBUG = false;
 
 /**
  * 
