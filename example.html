@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+
+    <script type="module">
+        import { file2imagedata } from "./dist/convert.js";
+        import Avif from './dist/index.js';
+
+
+        const $ = (...args) => document.querySelector(...args);
+
+        (async _ => {
+            const avif = new Avif();
+            await avif.init();
+
+            // let a = wasm.run();
+            // console.log(a);
+
+            const input = $('#file');
+            input.addEventListener('change', async _=> {
+                if (!input.files || input.files.length <= 0) {
+                    console.error('no files');
+                    return;
+                }
+
+                console.time();
+
+                let data = await avif.encode(
+                    input.files[0],
+                    {
+                        quality: 70,
+                        speed: 4,
+                        debug: true
+                    }
+                );
+
+                console.timeEnd();
+                console.log(data);
+
+
+                const file = new File([data], 'output.avif', { type: 'image/avif' });
+
+                const img = $('#img');
+                img.src = URL.createObjectURL(file);
+            });
+        })();
+    </script>
+</head>
+<body>
+    <input type="file" name="" id="file">
+
+    <img src="" alt="" id="img" width="512">
+</body>
+</html>
