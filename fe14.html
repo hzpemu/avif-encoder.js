@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>AVIF 转换器（适配你的 encoder.js）</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #status { color: green; margin: 10px 0; }
+    #preview { max-width: 300px; margin: 10px 0; display: none; }
+    #output { width: 100%; height: 100px; }
+  </style>
+</head>
+<body>
+  <h1>AVIF 转换器（使用你提供的 encoder.js）</h1>
+  <p>上传 PNG/JPEG/WebP 图片，自动转为 AVIF</p>
+
+  <input type="file" id="fileInput" accept="image/*" />
+  <button id="convertBtn" disabled>转换为 AVIF</button>
+
+  <div id="status">加载编码器中...</div>
+
+  <img id="preview" />
+
+  <textarea id="output" placeholder="AVIF Base64 将显示在这里"></textarea>
+
+  <script type="module">
+    const JS_URL = 'https://cdn.jsdelivr.net/gh/m4k15y6666fk/avif-encoder.js@master/dist/core/encoder.js';
+
+    let to_avif = null;
+    const status = document.getElementById('status');
+
+    async function loadEncoder() {
+      try {
+        // 1. 导入模块
+        const module = await import(JS_URL);
+        console.log('✅ 模块加载成功:', module);
+
+        // 2. 初始化 WebAssembly（必须！）
+        await module.default(); // ← 这是 __wbg_init
+
+        // 3. 获取 to_avif 函数
+        to_avif = module.to_avif;
+
+        status.textContent = '✅ AVIF 编码器已就绪';
+        document.getElementById('convertBtn').disabled = false;
+      } catch (err) {
+        console.error('❌ 加载失败:', err);
+        status.textContent = `❌ 加载失败: ${err.message}`;
+        alert('加载失败，请检查网络或 CDN 地址！');
+      }
+    }
+
+    // 从图片 URL 获取像素数据
+    function getImageDataFromUrl(imgUrl) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          resolve({ data: imageData.data, width: img.width, height: img.height });
+        };
+        img.onerror = reject;
+        img.src = imgUrl;
+      });
+    }
+
+    async function convertImage() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return;
+
+      try {
+        status.textContent = '🔄 正在转换...';
+        document.getElementById('convertBtn').disabled = true;
+
+        // 1. 转为 Data URL
+        const reader = new FileReader();
+        const dataUrl = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        // 2. 获取像素数据（Uint8ClampedArray）
+        const { data, width, height } = await getImageDataFromUrl(dataUrl);
+
+        // 3. 调用 to_avif
+        const avifBytes = to_avif(data, width, height, 70, 6, false); // quality=70, speed=6, alpha=false
+
+        // 4. 转为 Base64
+        const binary = String.fromCharCode(...new Uint8Array(avifBytes));
+        const avifBase64 = 'data:image/avif;base64,' + btoa(binary);
+
+        // 5. 显示结果
+        const preview = document.getElementById('preview');
+        preview.src = avifBase64;
+        preview.style.display = 'block';
+
+        const output = document.getElementById('output');
+        output.value = avifBase64;
+
+        status.textContent = '✅ 转换成功！';
+      } catch (err) {
+        console.error('转换失败:', err);
+        status.textContent = `❌ 转换失败: ${err.message}`;
+      } finally {
+        document.getElementById('convertBtn').disabled = false;
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      loadEncoder();
+      document.getElementById('fileInput').addEventListener('change', () => {
+        document.getElementById('convertBtn').disabled = !to_avif;
+      });
+      document.getElementById('convertBtn').addEventListener('click', convertImage);
+    });
+  </script>
+</body>
+</html>
