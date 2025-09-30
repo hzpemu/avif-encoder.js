@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>AVIF 转换器（缩放至 1280x720 内）</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      margin: 20px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #2c3e50;
+    }
+    #status {
+      margin: 10px 0;
+      padding: 8px;
+      background-color: #f8f9fa;
+      border-radius: 4px;
+      min-height: 20px;
+    }
+    #preview {
+      max-width: 100%;
+      max-height: 400px;
+      margin: 10px 0;
+      display: none;
+      border: 1px solid #ddd;
+    }
+    #output {
+      width: 100%;
+      height: 120px;
+      margin-top: 10px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    button {
+      margin-top: 10px;
+      padding: 6px 12px;
+    }
+    .size-info {
+      margin-top: 10px;
+      padding: 10px;
+      background-color: #e6f7ff;
+      border: 1px solid #b3e0ff;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>AVIF 转换器（自动缩放至 ≤1280×720）</h1>
+  <p>上传任意图片，自动等比缩放后转为 AVIF</p>
+
+  <input type="file" id="fileInput" accept="image/*" />
+  <button id="convertBtn" disabled>转换为 AVIF</button>
+
+  <div id="status">加载编码器中...</div>
+
+  <img id="preview" />
+
+  <textarea id="output" placeholder="AVIF Base64 将显示在这里"></textarea>
+
+  <script type="module">
+    // 使用你指定的 encoder.js
+    const JS_URL = 'https://fastly.jsdelivr.net/gh/m4k15y6666fk/avif-encoder.js@master/dist/core/encoder.js';
+
+    let to_avif = null;
+    const statusEl = document.getElementById('status');
+
+    // 加载编码器
+    async function loadEncoder() {
+      try {
+        const module = await import(JS_URL);
+        await module.default();
+        to_avif = module.to_avif;
+        statusEl.textContent = '✅ AVIF 编码器已就绪';
+        document.getElementById('convertBtn').disabled = false;
+      } catch (err) {
+        console.error('❌ 加载失败:', err);
+        statusEl.textContent = `❌ 加载失败: ${err.message}`;
+      }
+    }
+
+    // 缩放图片并返回 ImageData（保持比例，宽≤1280，高≤720）
+    function getResizedImageData(img) {
+      const MAX_WIDTH = 1280;
+      const MAX_HEIGHT = 720;
+
+      let width = img.width;
+      let height = img.height;
+
+      // 计算缩放比例
+      const ratio = Math.min(MAX_WIDTH / width, MAX_HEIGHT / height, 1);
+      width = Math.floor(width * ratio);
+      height = Math.floor(height * ratio);
+
+      // 创建 canvas 并绘制缩放后的图像
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+
+      return {
+        data: ctx.getImageData(0, 0, width, height).data,		
+        width,
+        height
+      };
+    }
+	
+	
+	function dataToCanvas(data, width, height) {
+  // 1. 创建 ImageData 对象（必须！不能只用 data 数组）
+  const imageData = new ImageData(data, width, height);
+
+  // 2. 创建 canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  // 3. 将 ImageData 写入 canvas
+  ctx.putImageData(imageData, 0, 0);
+
+  // 4. 返回 canvas（现在你可以用 ctx.drawImage(canvas, ...) 了）
+  return canvas;
+}
+
+function getBase64Size(base64Str) {
+    // 计算字符串长度，然后除以 1024 得到 KB
+    return (base64Str.length * (3/4) ).toFixed(2); // Base64 编码大概增加 33% 长度
+//	const webpBase64 = canvas.toDataURL("image/webp", 0.8);
+//const sizeKB = getBase64Size(webpBase64.split(',')[1]); // 忽略前缀 "data:image/webp;base64,"
+//console.log(`Base64 数据大小为: ${sizeKB} KB`);
+}
+
+    // 转换函数
+    async function convertImage() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) return;
+
+      try {
+        statusEl.textContent = '🔄 正在处理...';
+        document.getElementById('convertBtn').disabled = true;
+
+        // 读取为 Data URL
+        const reader = new FileReader();
+        const dataUrl = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        // 加载图片
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise((resolve) => {
+          img.onload = resolve;
+          img.onerror = () => { throw new Error('图片加载失败'); };
+          img.src = dataUrl;
+        });
+
+        // 缩放并获取像素数据
+        const { data,imgdata, width, height } = getResizedImageData(img);
+		
+		
+		const originalSizeBytes = file.size;
+		let imgBase64;
+		let imgSizeBytes;
+		
+		let aviforwebp='avif';
+		if (originalSizeBytes > 100 * 1024) {
+		        // 调用 AVIF 编码器
+        const avifBytes = to_avif(data, width, height, 70, 6, false); // quality=70, speed=6
+
+        // 转 Base64
+        const binary = String.fromCharCode(...new Uint8Array(avifBytes));
+        const avifBase64 = 'data:image/avif;base64,' + btoa(binary);
+		imgBase64=avifBase64;
+        const avifSizeBytes = avifBytes.length;
+		imgSizeBytes=avifSizeBytes;
+		
+		} else{
+		   const canvas = dataToCanvas(data, width, height);
+
+          // 直接转为 WebP Base64
+          const webpBase64 = canvas.toDataURL("image/webp", 0.8); // 0.8 是质量参数
+		  
+		  imgBase64=webpBase64;
+		 const sizeKB = getBase64Size(webpBase64.split(',')[1]);
+		  imgSizeBytes=sizeKB;
+		  aviforwebp='webp'
+		}
+
+
+
+        // 显示预览
+        const preview = document.getElementById('preview');
+        preview.src = imgBase64;
+        preview.style.display = 'block';
+
+        // 输出 Base64
+        const output = document.getElementById('output');
+        output.value = imgBase64;
+
+        // 清除旧的大小信息
+        const oldInfo = document.querySelector('.size-info');
+        if (oldInfo) oldInfo.remove();
+
+        // 显示大小对比
+       // const originalSizeBytes = file.size;
+        const ratio = (1 - imgSizeBytes / originalSizeBytes) * 100;
+        const sizeInfo = document.createElement('div');
+        sizeInfo.className = 'size-info';
+        sizeInfo.innerHTML = `
+          <p><strong>原始文件大小：</strong> ${(originalSizeBytes / 1024).toFixed(2)} KB</p>
+          <p><strong>图片 压缩后大小：</strong> ${(imgSizeBytes / 1024).toFixed(2)} KB</p>
+          <p><strong>压缩率：</strong> ${ratio >= 0 ? ratio.toFixed(1) : '负（变大）'}%</p>
+          <p><em>注：图片已自动缩放至 ${width}×${height}（≤1280×720）</em></p>
+		  <p><em>注：图片使用了 ${aviforwebp}压缩</em></p>
+        `;
+        statusEl.parentNode.insertBefore(sizeInfo, statusEl);
+
+        statusEl.textContent = '✅ 转换成功！';
+
+      } catch (err) {
+        console.error('转换失败:', err);
+        statusEl.textContent = `❌ 转换失败: ${err.message}`;
+      } finally {
+        document.getElementById('convertBtn').disabled = false;
+      }
+    }
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      loadEncoder();
+      const fileInput = document.getElementById('fileInput');
+      const convertBtn = document.getElementById('convertBtn');
+
+      fileInput.addEventListener('change', () => {
+        convertBtn.disabled = !to_avif || !fileInput.files.length;
+      });
+
+      convertBtn.addEventListener('click', convertImage);
+    });
+  </script>
+</body>
+</html>
