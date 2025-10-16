@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Base64 ↔ Blob 互转演示</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; }
+  img { max-width: 200px; display: block; margin-top: 10px; border: 1px solid #ccc; }
+  button { margin: 8px 5px; padding: 8px 15px; }
+  .info { margin-top: 10px; font-size: 14px; color: #333; }
+</style>
+</head>
+<body>
+  <h2>Base64 ↔ Blob 转换测试</h2>
+
+  <input type="file" id="fileInput" accept="image/*">
+  <br>
+  <button id="toBlobBtn" disabled>Base64 → Blob</button>
+  <button id="toBase64Btn" disabled>Blob → Base64</button>
+
+  <div class="info" id="info"></div>
+  <img id="preview" alt="预览图片">
+
+  <script>
+  // ---------- 转换函数 ----------
+  function base64ToBlob(base64, mimeType) {
+    const arr = base64.split(',');
+    const mime = mimeType || arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[arr.length - 1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) u8arr[n] = bstr.charCodeAt(n);
+    return new Blob([u8arr], { type: mime });
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = err => reject(err);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // ---------- 页面逻辑 ----------
+  const fileInput = document.getElementById('fileInput');
+  const toBlobBtn = document.getElementById('toBlobBtn');
+  const toBase64Btn = document.getElementById('toBase64Btn');
+  const preview = document.getElementById('preview');
+  const info = document.getElementById('info');
+
+  let base64Data = '';
+  let blobData = null;
+
+  fileInput.addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function() {
+      base64Data = reader.result;
+      preview.src = base64Data;
+      info.innerHTML = `原始文件大小：${(file.size / 1024).toFixed(2)} KB`;
+      toBlobBtn.disabled = false;
+      toBase64Btn.disabled = true;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  toBlobBtn.addEventListener('click', async () => {
+    if (!base64Data) return;
+    blobData = base64ToBlob(base64Data);
+    info.innerHTML += `<br>转成 Blob 大小：${(blobData.size / 1024).toFixed(2)} KB`;
+    toBase64Btn.disabled = false;
+  });
+
+  toBase64Btn.addEventListener('click', async () => {
+    if (!blobData) return;
+	preview.src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNoaGgAAAMEAYFL09IQAAAAAElFTkSuQmCC";
+    const newBase64 = await blobToBase64(blobData);
+    preview.src = newBase64;
+    info.innerHTML += `<br>Blob 转回 Base64 长度：${(newBase64.length / 1024).toFixed(2)} KB`;
+  });
+  </script>
+</body>
+</html>
