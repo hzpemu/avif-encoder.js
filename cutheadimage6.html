@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>一寸相片裁剪工具（已修复滚动+双击定位问题）</title>
+<style>
+  body { font-family: "Microsoft YaHei", Arial; display:flex; flex-direction:column; align-items:center; padding:20px; }
+  h2 { margin-bottom:8px; }
+  #imgContainer {
+    width:500px; height:500px; border:1px solid #ccc; overflow:auto; position:relative;
+  }
+  canvas { display:block; }
+  #preview { margin-top:12px; border:1px solid #888; }
+  .controls { margin-top:10px; }
+</style>
+</head>
+<body>
+  <h2>一寸相片裁剪工具（修正版）</h2>
+  <input type="file" id="fileInput" accept="image/*">
+  <div id="imgContainer">
+    <canvas id="mainCanvas"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="cropBtn">裁剪为一寸（295×413）</button>
+    <a id="dl" style="margin-left:12px;" download="passport.png">下载结果</a>
+  </div>
+
+  <canvas id="preview" width="295" height="413"></canvas>
+
+<script>
+/*
+  说明：
+  - 修复要点：不要把 container.scrollLeft/scrollTop 加到 client 坐标里。
+  - 双击定位后会自动滚动容器以把裁剪框尽量居中显示，便于后续拖动/缩放微调。
+*/
+
+const fileInput = document.getElementById('fileInput');
+const container = document.getElementById('imgContainer');
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+const preview = document.getElementById('preview');
+const pctx = preview.getContext('2d');
+const cropBtn = document.getElementById('cropBtn');
+const dl = document.getElementById('dl');
+
+let img = new Image();
+let imgLoaded = false;
+
+// 裁剪框（以 canvas 像素为单位）
+const OUT_W = 295, OUT_H = 413;
+const ASPECT = OUT_W / OUT_H;
+
+let box = { x: 50, y: 50, w: 147.5, h: 147.5 / ASPECT }; // 初始框
+let dragging = false, resizing = false;
+let start = { mx:0, my:0, bx:0, by:0, bw:0, bh:0 };
+
+// 读取图片
+fileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      // 若图片尺寸小于容器，使 canvas 仍可显示完整（container 会有滚动）
+      draw();
+      imgLoaded = true;
+      // 初始化 box 在中心，固定为一寸大小（295×413）
+      box.w = OUT_W;
+      box.h = OUT_H;
+      // 如果图片太窄，则按比例缩小框
+      if (box.w > canvas.width - 20) {
+        box.w = canvas.width - 20;
+        box.h = Math.round(box.w / ASPECT);
+      }
+      box.x = Math.max(10, Math.round((canvas.width - box.w) / 2));
+      box.y = Math.max(10, Math.round((canvas.height - box.h) / 2));
+      limitBox();
+      draw();
+      // 把初始区域滚动到容器中间显示
+      scrollBoxIntoView();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// 绘制图和框
+function draw() {
+  if (!img.src) {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    return;
+  }
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  // 半透明遮罩外圈（更直观）
+  ctx.save();
+  // 绘制四个半透明矩形，避开选择框区域
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  // 上方矩形
+  ctx.fillRect(0, 0, canvas.width, box.y);
+  // 左侧矩形
+  ctx.fillRect(0, box.y, box.x, box.h);
+  // 右侧矩形
+  ctx.fillRect(box.x + box.w, box.y, canvas.width - (box.x + box.w), box.h);
+  // 下方矩形
+  ctx.fillRect(0, box.y + box.h, canvas.width, canvas.height - (box.y + box.h));
+  ctx.restore();
+  // 红色边框
+  ctx.strokeStyle = 'red';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.w, box.h);
+  // 右下缩放手柄（小方块）
+  const hh = 10;
+  ctx.fillStyle = 'red';
+  ctx.fillRect(box.x + box.w - hh/2, box.y + box.h - hh/2, hh, hh);
+}
+
+// 限制框不出画布
+function limitBox() {
+  if (box.w < 40) box.w = 40, box.h = Math.round(box.w / ASPECT);
+  if (box.h < 40) box.h = 40, box.w = Math.round(box.h * ASPECT);
+  if (box.x < 0) box.x = 0;
+  if (box.y < 0) box.y = 0;
+  if (box.x + box.w > canvas.width) box.x = canvas.width - box.w;
+  if (box.y + box.h > canvas.height) box.y = canvas.height - box.h;
+}
+
+// 事件坐标映射：重要！不再加 container.scrollLeft/scrollTop（← 关键修复）
+function getCanvasMousePos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  // rect 已经反映了容器滚动后的 canvas 在视口的位置
+  const x = evt.clientX - rect.left;
+  const y = evt.clientY - rect.top;
+  // 若 canvas 超出容器并被滚动，client 坐标相对 rect 已正确对应 canvas 像素坐标
+  return { x, y };
+}
+
+// 鼠标按下：判断是拖动框内还是点击到右下手柄进行缩放
+canvas.addEventListener('mousedown', (e) => {
+  if (!imgLoaded) return;
+  const p = getCanvasMousePos(e);
+  // 手柄检测（10px 区域）
+  const hh = 10;
+  const hx = box.x + box.w - hh/2, hy = box.y + box.h - hh/2;
+  if (p.x >= hx && p.x <= hx + hh && p.y >= hy && p.y <= hy + hh) {
+    // 开始缩放（等比）
+    resizing = true;
+    start.mx = p.x; start.my = p.y;
+    start.bw = box.w; start.bh = box.h;
+  } else if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
+    // 开始拖动
+    dragging = true;
+    start.mx = p.x; start.my = p.y;
+    start.bx = box.x; start.by = box.y;
+  }
+});
+
+// 鼠标移动：拖动或缩放
+window.addEventListener('mousemove', (e) => {
+  if (!imgLoaded) return;
+  if (!dragging && !resizing) return;
+  const p = getCanvasMousePos(e);
+  if (dragging) {
+    box.x = Math.round(start.bx + (p.x - start.mx));
+    box.y = Math.round(start.by + (p.y - start.my));
+    limitBox();
+    draw();
+  } else if (resizing) {
+    // 使用鼠标水平移动作为缩放参考，计算比例，平滑且受边界限制
+    const dx = p.x - start.mx;
+    // 将宽度按比例变化，基于开始宽度
+    let newW = Math.round(start.bw + dx);
+    if (newW < 40) newW = 40;
+    if (box.x + newW > canvas.width) newW = canvas.width - box.x;
+    let newH = Math.round(newW / ASPECT);
+    if (box.y + newH > canvas.height) {
+      // 若高度超出，则以高度为准来计算 newW
+      newH = canvas.height - box.y;
+      newW = Math.round(newH * ASPECT);
+    }
+    box.w = newW; box.h = newH;
+    limitBox();
+    draw();
+  }
+});
+
+// 鼠标抬起：结束
+window.addEventListener('mouseup', () => {
+  dragging = false; resizing = false;
+});
+
+// 双击：把框中心移动到点击点，并**把框滚动到容器中间**（避免出现在可视外）
+canvas.addEventListener('dblclick', (e) => {
+  if (!imgLoaded) return;
+  const p = getCanvasMousePos(e);
+  box.x = Math.round(p.x - box.w / 2);
+  box.y = Math.round(p.y - box.h / 2);
+  limitBox();
+  draw();
+  // 自动滚动容器把框尽量居中显示（方便微调）
+  scrollBoxIntoView();
+});
+
+// 将框滚动到容器中间显示（平滑居中）
+function scrollBoxIntoView() {
+  // 目标：让 box 的中心尽量位于容器可视中心
+  const boxCenterX = box.x + box.w / 2;
+  const boxCenterY = box.y + box.h / 2;
+  // container 的可视尺寸
+  const cw = container.clientWidth, ch = container.clientHeight;
+  // 计算应该设置的 scrollLeft/Top
+  let targetScrollLeft = Math.max(0, Math.round(boxCenterX - cw / 2));
+  let targetScrollTop  = Math.max(0, Math.round(boxCenterY - ch / 2));
+  // 限制到最大滚动范围
+  const maxScrollLeft = canvas.width - cw;
+  const maxScrollTop  = canvas.height - ch;
+  if (targetScrollLeft > maxScrollLeft) targetScrollLeft = Math.max(0, maxScrollLeft);
+  if (targetScrollTop  > maxScrollTop)  targetScrollTop  = Math.max(0, maxScrollTop);
+  // 应用滚动（瞬时）
+  container.scrollLeft = targetScrollLeft;
+  container.scrollTop  = targetScrollTop;
+}
+
+// 裁剪输出
+cropBtn.addEventListener('click', () => {
+  if (!imgLoaded) return alert('请先加载图片');
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = OUT_W; outCanvas.height = OUT_H;
+  const octx = outCanvas.getContext('2d');
+  // 将选区绘制并缩放到输出尺寸
+  octx.drawImage(img,
+    box.x, box.y, box.w, box.h,
+    0, 0, OUT_W, OUT_H
+  );
+  // 在预览画布显示
+  pctx.clearRect(0,0,preview.width, preview.height);
+  pctx.drawImage(outCanvas, 0, 0);
+  // 生成下载链接
+  outCanvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    dl.href = url;
+    dl.download = 'passport.png';
+  }, 'image/png');
+});
+
+</script>
+</body>
+</html>

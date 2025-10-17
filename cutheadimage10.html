@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>一寸相片裁剪工具（PC和移动端兼容版 - 含IE11兼容）</title>
+<style>
+  * { box-sizing: border-box; }
+  body { 
+    font-family: "Microsoft YaHei", Arial; 
+    display: -ms-flexbox;
+    display: flex; 
+    -ms-flex-direction: column;
+    flex-direction: column; 
+    -ms-flex-align: center;
+    align-items: center; 
+    padding: 20px; 
+    margin: 0;
+    -ms-touch-action: manipulation;
+    touch-action: manipulation;
+  }
+  h2 { 
+    margin-bottom: 8px; 
+    font-size: 1.5rem;
+    text-align: center;
+  }
+  #imgContainer {
+    width: 100%;
+    max-width: 500px; 
+    height: 500px; 
+    border: 1px solid #ccc; 
+    overflow: auto; 
+    position: relative;
+    margin: 0 auto;
+  }
+  canvas { display: block; }
+  #preview { 
+    margin-top: 12px; 
+    border: 1px solid #888; 
+    max-width: 100%;
+  }
+  .controls { 
+    margin-top: 10px; 
+    display: -ms-flexbox;
+    display: flex;
+    -ms-flex-wrap: wrap;
+    flex-wrap: wrap;
+    -ms-flex-pack: center;
+    justify-content: center;
+    margin-left: -5px;
+    margin-right: -5px;
+  }
+  .controls > * {
+    margin: 0 5px 10px 5px;
+  }
+  #fileInput {
+    max-width: 100%;
+    margin-bottom: 10px;
+  }
+  button, a.button {
+    padding: 8px 12px;
+    background: #4285f4;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 14px;
+    display: inline-block;
+  }
+  button:hover, a.button:hover {
+    background: #3367d6;
+  }
+  
+  /* 移动端优化 */
+  @media (max-width: 600px) {
+    body { padding: 10px; }
+    h2 { font-size: 1.2rem; }
+    #imgContainer { 
+      height: 300px; 
+    }
+    .controls {
+      -ms-flex-direction: column;
+      flex-direction: column;
+      width: 100%;
+    }
+    button, a.button {
+      width: 100%;
+      margin: 5px 0;
+      padding: 12px;
+      font-size: 16px;
+    }
+  }
+  
+  /* IE11兼容性修复 */
+  @media all and (-ms-high-contrast: none), (-ms-high-contrast: active) {
+    /* IE10+ 特定样式 */
+    body {
+      display: block;
+      text-align: center;
+    }
+    #imgContainer {
+      display: inline-block;
+      text-align: left;
+    }
+    .controls {
+      display: block;
+      text-align: center;
+    }
+    .controls > * {
+      display: inline-block;
+      vertical-align: middle;
+    }
+  }
+</style>
+<!--[if IE]>
+<script src="https://cdn.jsdelivr.net/npm/es6-promise@4/dist/es6-promise.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/es6-promise@4/dist/es6-promise.auto.min.js"></script> 
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.0.0-rc.7/dist/html2canvas.min.js"></script>
+<![endif]-->
+</head>
+<body>
+  <h2>一寸相片裁剪工具（PC和移动端兼容版 - 含IE11兼容）</h2>
+  <input type="file" id="fileInput" accept="image/*">
+  <div id="imgContainer">
+    <canvas id="mainCanvas"></canvas>
+  </div>
+
+  <div class="controls">
+    <button id="cropBtn">裁剪为一寸（295×413）</button>
+    <a id="dl" class="button" download="passport.png">下载结果</a>
+  </div>
+
+  <canvas id="preview" width="295" height="413"></canvas>
+
+<script>
+/**
+ * 一寸相片裁剪工具 - 函数式结构重构版（含IE11兼容）
+ * 特点：
+ * 1. 支持PC和移动端
+ * 2. 大图片自动缩放显示，保持原图质量
+ * 3. 函数式结构，易于移植和维护
+ * 4. 兼容IE11浏览器
+ */
+
+// IE11 Polyfill
+if (!Object.assign) {
+  Object.assign = function(target) {
+    'use strict';
+    if (target === null || target === undefined) {
+      throw new TypeError('Cannot convert undefined or null to object');
+    }
+
+    var to = Object(target);
+    
+    for (var index = 1; index < arguments.length; index++) {
+      var nextSource = arguments[index];
+
+      if (nextSource !== null && nextSource !== undefined) { 
+        for (var nextKey in nextSource) {
+          if (Object.prototype.hasOwnProperty.call(nextSource, nextKey)) {
+            to[nextKey] = nextSource[nextKey];
+          }
+        }
+      }
+    }
+    return to;
+  };
+}
+
+// 应用主模块
+var PhotoCropper = (function() {
+  // 常量定义
+  var CONSTANTS = {
+    OUT_W: 295,         // 输出宽度（一寸照片）
+    OUT_H: 413,         // 输出高度（一寸照片）
+    MAX_DISPLAY_SIZE: 500, // 最大显示尺寸
+    MIN_BOX_SIZE: 40    // 最小裁剪框尺寸
+  };
+  
+  // 状态管理
+  var state = {
+    img: new Image(),           // 显示用图片
+    originalImg: new Image(),   // 原始图片
+    imgLoaded: false,           // 图片是否已加载
+    originalWidth: 0,           // 原始图片宽度
+    originalHeight: 0,          // 原始图片高度
+    scaleRatio: 1,              // 缩放比例
+    box: {                      // 裁剪框
+      x: 50, 
+      y: 50, 
+      w: CONSTANTS.OUT_W / 2, 
+      h: (CONSTANTS.OUT_W / 2) / (CONSTANTS.OUT_W / CONSTANTS.OUT_H)
+    },
+    dragging: false,            // 是否正在拖动
+    resizing: false,            // 是否正在缩放
+    start: {                    // 开始状态
+      mx: 0, my: 0, bx: 0, by: 0, bw: 0, bh: 0
+    },
+    isMobile: false,            // 是否为移动设备
+    isIE: false                 // 是否为IE浏览器
+  };
+  
+  // DOM元素引用
+  var elements = {};
+  
+  // 初始化函数
+  function init() {
+    // 获取DOM元素
+    elements = {
+      fileInput: document.getElementById('fileInput'),
+      container: document.getElementById('imgContainer'),
+      canvas: document.getElementById('mainCanvas'),
+      ctx: document.getElementById('mainCanvas').getContext('2d'),
+      preview: document.getElementById('preview'),
+      pctx: document.getElementById('preview').getContext('2d'),
+      cropBtn: document.getElementById('cropBtn'),
+      dl: document.getElementById('dl')
+    };
+    
+    // 检测是否为移动设备
+    state.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    // 检测是否为IE浏览器
+    state.isIE = navigator.userAgent.indexOf('MSIE') !== -1 || navigator.appVersion.indexOf('Trident/') > -1;
+    
+    // 绑定事件
+    bindEvents();
+  }
+  
+  // 绑定事件处理函数
+  function bindEvents() {
+    // 文件选择事件
+    addEvent(elements.fileInput, 'change', handleFileSelect);
+    
+    // 裁剪按钮事件
+    addEvent(elements.cropBtn, 'click', cropImage);
+    
+    // PC端鼠标事件
+    addEvent(elements.canvas, 'mousedown', handleMouseDown);
+    addEvent(window, 'mousemove', handleMouseMove);
+    addEvent(window, 'mouseup', handleMouseUp);
+    addEvent(elements.canvas, 'dblclick', handleDoubleClick);
+    
+    // 移动端触摸事件
+    if (!state.isIE) {
+      // 非IE浏览器使用passive:false
+      addEvent(elements.canvas, 'touchstart', handleTouchStart, { passive: false });
+      addEvent(window, 'touchmove', handleTouchMove, { passive: false });
+      addEvent(window, 'touchend', handleTouchEnd);
+      addEvent(elements.canvas, 'touchend', handleTouchEnd);
+    } else {
+      // IE浏览器使用简化版本
+      addEvent(elements.canvas, 'touchstart', handleTouchStart);
+      addEvent(window, 'touchmove', handleTouchMove);
+      addEvent(window, 'touchend', handleTouchEnd);
+      addEvent(elements.canvas, 'touchend', handleTouchEnd);
+    }
+  }
+  
+  // 兼容性事件添加函数
+  function addEvent(element, type, handler, options) {
+    if (element.addEventListener) {
+      if (options) {
+        element.addEventListener(type, handler, options);
+      } else {
+        element.addEventListener(type, handler, false);
+      }
+    } else if (element.attachEvent) {
+      // IE9以下
+      element.attachEvent('on' + type, handler);
+    } else {
+      element['on' + type] = handler;
+    }
+  }
+  
+  // 文件选择处理
+  function handleFileSelect(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      loadImage(ev.target.result);
+    };
+    reader.readAsDataURL(file);
+  }
+  
+  // 加载图片
+  function loadImage(dataUrl) {
+    // 保存原始图片数据
+    state.originalImg.onload = function() {
+      state.originalWidth = state.originalImg.width;
+      state.originalHeight = state.originalImg.height;
+      
+      // 计算缩放比例和显示尺寸
+      var displaySize = calculateDisplaySize(
+        state.originalWidth, 
+        state.originalHeight, 
+        CONSTANTS.MAX_DISPLAY_SIZE
+      );
+      
+      // 加载显示用的图片
+      state.img.onload = function() {
+        elements.canvas.width = displaySize.width;
+        elements.canvas.height = displaySize.height;
+        draw();
+        state.imgLoaded = true;
+        
+        // 初始化裁剪框
+        initCropBox(displaySize.width, displaySize.height);
+        
+        // 把初始区域滚动到容器中间显示
+        scrollBoxIntoView();
+      };
+      
+      // 如果需要缩放，创建缩放后的图片数据
+      if (state.scaleRatio !== 1) {
+        var tempCanvas = document.createElement('canvas');
+        tempCanvas.width = displaySize.width;
+        tempCanvas.height = displaySize.height;
+        var tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(state.originalImg, 0, 0, displaySize.width, displaySize.height);
+        state.img.src = tempCanvas.toDataURL('image/png');
+      } else {
+        state.img.src = dataUrl;
+      }
+    };
+    
+    state.originalImg.src = dataUrl;
+  }
+  
+  // 计算显示尺寸和缩放比例
+  function calculateDisplaySize(width, height, maxSize) {
+    var displayWidth = width;
+    var displayHeight = height;
+    
+    // 如果图片尺寸大于最大显示尺寸，按比例缩放
+    if (width > maxSize || height > maxSize) {
+      if (width >= height) {
+        displayWidth = maxSize;
+        displayHeight = Math.round(height * (maxSize / width));
+        state.scaleRatio = width / maxSize;
+      } else {
+        displayHeight = maxSize;
+        displayWidth = Math.round(width * (maxSize / height));
+        state.scaleRatio = height / maxSize;
+      }
+    } else {
+      state.scaleRatio = 1;
+    }
+    
+    return { width: displayWidth, height: displayHeight };
+  }
+  
+  // 初始化裁剪框
+  function initCropBox(canvasWidth, canvasHeight) {
+    var aspect = CONSTANTS.OUT_W / CONSTANTS.OUT_H;
+    
+    // 初始化 box 在中心，固定为一寸大小或按比例缩小
+    var boxWidth = Math.min(CONSTANTS.OUT_W / state.scaleRatio, canvasWidth - 20);
+    var boxHeight = Math.round(boxWidth / aspect);
+    
+    // 如果图片太窄，则按比例缩小框
+    if (boxWidth > canvasWidth - 20) {
+      boxWidth = canvasWidth - 20;
+      boxHeight = Math.round(boxWidth / aspect);
+    }
+    
+    state.box.w = boxWidth;
+    state.box.h = boxHeight;
+    state.box.x = Math.max(10, Math.round((canvasWidth - boxWidth) / 2));
+    state.box.y = Math.max(10, Math.round((canvasHeight - boxHeight) / 2));
+    
+    limitBox();
+    draw();
+  }
+  
+  // 绘制图像和裁剪框
+  function draw() {
+    var ctx = elements.ctx;
+    var canvas = elements.canvas;
+    var box = state.box;
+    
+    if (!state.img.src) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(state.img, 0, 0, canvas.width, canvas.height);
+    
+    // 半透明遮罩外圈
+    ctx.save();
+    // 绘制四个半透明矩形，避开选择框区域
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    // 上方矩形
+    ctx.fillRect(0, 0, canvas.width, box.y);
+    // 左侧矩形
+    ctx.fillRect(0, box.y, box.x, box.h);
+    // 右侧矩形
+    ctx.fillRect(box.x + box.w, box.y, canvas.width - (box.x + box.w), box.h);
+    // 下方矩形
+    ctx.fillRect(0, box.y + box.h, canvas.width, canvas.height - (box.y + box.h));
+    ctx.restore();
+    
+    // 红色边框
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.w, box.h);
+    
+    // 右下缩放手柄（小方块）
+    var hh = state.isMobile ? 20 : 10; // 移动端更大的手柄
+    ctx.fillStyle = 'red';
+    ctx.fillRect(box.x + box.w - hh/2, box.y + box.h - hh/2, hh, hh);
+  }
+  
+  // 限制裁剪框不出画布
+  function limitBox() {
+    var box = state.box;
+    var canvas = elements.canvas;
+    var aspect = CONSTANTS.OUT_W / CONSTANTS.OUT_H;
+    var minSize = CONSTANTS.MIN_BOX_SIZE;
+    
+    if (box.w < minSize) box.w = minSize, box.h = Math.round(box.w / aspect);
+    if (box.h < minSize) box.h = minSize, box.w = Math.round(box.h * aspect);
+    if (box.x < 0) box.x = 0;
+    if (box.y < 0) box.y = 0;
+    if (box.x + box.w > canvas.width) box.x = canvas.width - box.w;
+    if (box.y + box.h > canvas.height) box.y = canvas.height - box.h;
+  }
+  
+  // 获取鼠标/触摸在Canvas上的坐标
+  function getCanvasPointerPos(evt) {
+    var rect = elements.canvas.getBoundingClientRect();
+    var clientX = evt.clientX !== undefined ? evt.clientX : (evt.touches && evt.touches[0] ? evt.touches[0].clientX : 0);
+    var clientY = evt.clientY !== undefined ? evt.clientY : (evt.touches && evt.touches[0] ? evt.touches[0].clientY : 0);
+    
+    // rect 已经反映了容器滚动后的 canvas 在视口的位置
+    var x = clientX - rect.left;
+    var y = clientY - rect.top;
+    
+    return { x: x, y: y };
+  }
+  
+  // 鼠标按下处理
+  function handleMouseDown(e) {
+    if (!state.imgLoaded) return;
+    
+    var p = getCanvasPointerPos(e);
+    checkInteraction(p);
+  }
+  
+  // 触摸开始处理
+  function handleTouchStart(e) {
+    if (!state.imgLoaded) return;
+    
+    // 防止触摸时页面滚动
+    if (e.preventDefault) {
+      e.preventDefault();
+    }
+    
+    var p = getCanvasPointerPos(e);
+    checkInteraction(p);
+  }
+  
+  // 检查交互类型（拖动或缩放）
+  function checkInteraction(p) {
+    var box = state.box;
+    var hh = state.isMobile ? 20 : 10; // 移动端更大的手柄
+    
+    // 手柄检测
+    var hx = box.x + box.w - hh/2, hy = box.y + box.h - hh/2;
+    if (p.x >= hx && p.x <= hx + hh && p.y >= hy && p.y <= hy + hh) {
+      // 开始缩放（等比）
+      state.resizing = true;
+      state.start.mx = p.x; 
+      state.start.my = p.y;
+      state.start.bw = box.w; 
+      state.start.bh = box.h;
+    } else if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
+      // 开始拖动
+      state.dragging = true;
+      state.start.mx = p.x; 
+      state.start.my = p.y;
+      state.start.bx = box.x; 
+      state.start.by = box.y;
+    }
+  }
+  
+  // 鼠标移动处理
+  function handleMouseMove(e) {
+    if (!state.imgLoaded || (!state.dragging && !state.resizing)) return;
+    
+    var p = getCanvasPointerPos(e);
+    updateBoxPosition(p);
+  }
+  
+  // 触摸移动处理
+  function handleTouchMove(e) {
+    if (!state.imgLoaded || (!state.dragging && !state.resizing)) return;
+    
+    // 防止触摸时页面滚动
+    if (e.preventDefault) {
+      e.preventDefault();
+    }
+    
+    var p = getCanvasPointerPos(e);
+    updateBoxPosition(p);
+  }
+  
+  // 更新裁剪框位置/大小
+  function updateBoxPosition(p) {
+    var box = state.box;
+    var start = state.start;
+    var canvas = elements.canvas;
+    var aspect = CONSTANTS.OUT_W / CONSTANTS.OUT_H;
+    
+    if (state.dragging) {
+      box.x = Math.round(start.bx + (p.x - start.mx));
+      box.y = Math.round(start.by + (p.y - start.my));
+      limitBox();
+      draw();
+    } else if (state.resizing) {
+      // 使用指针水平移动作为缩放参考
+      var dx = p.x - start.mx;
+      
+      // 将宽度按比例变化，基于开始宽度
+      var newW = Math.round(start.bw + dx);
+      if (newW < CONSTANTS.MIN_BOX_SIZE) newW = CONSTANTS.MIN_BOX_SIZE;
+      if (box.x + newW > canvas.width) newW = canvas.width - box.x;
+      
+      var newH = Math.round(newW / aspect);
+      if (box.y + newH > canvas.height) {
+        // 若高度超出，则以高度为准来计算 newW
+        newH = canvas.height - box.y;
+        newW = Math.round(newH * aspect);
+      }
+      
+      box.w = newW; 
+      box.h = newH;
+      limitBox();
+      draw();
+    }
+  }
+  
+  // 鼠标抬起处理
+  function handleMouseUp() {
+    state.dragging = false;
+    state.resizing = false;
+  }
+  
+  // 触摸结束处理
+  function handleTouchEnd() {
+    state.dragging = false;
+    state.resizing = false;
+  }
+  
+  // 双击处理
+  function handleDoubleClick(e) {
+    if (!state.imgLoaded) return;
+    
+    var p = getCanvasPointerPos(e);
+    state.box.x = Math.round(p.x - state.box.w / 2);
+    state.box.y = Math.round(p.y - state.box.h / 2);
+    limitBox();
+    draw();
+    
+    // 自动滚动容器把框尽量居中显示
+    scrollBoxIntoView();
+  }
+  
+  // 将裁剪框滚动到容器中间显示
+  function scrollBoxIntoView() {
+    var box = state.box;
+    var container = elements.container;
+    
+    // 目标：让 box 的中心尽量位于容器可视中心
+    var boxCenterX = box.x + box.w / 2;
+    var boxCenterY = box.y + box.h / 2;
+    
+    // container 的可视尺寸
+    var cw = container.clientWidth, ch = container.clientHeight;
+    
+    // 计算应该设置的 scrollLeft/Top
+    var targetScrollLeft = Math.max(0, Math.round(boxCenterX - cw / 2));
+    var targetScrollTop = Math.max(0, Math.round(boxCenterY - ch / 2));
+    
+    // 限制到最大滚动范围
+    var maxScrollLeft = elements.canvas.width - cw;
+    var maxScrollTop = elements.canvas.height - ch;
+    
+    if (targetScrollLeft > maxScrollLeft) targetScrollLeft = Math.max(0, maxScrollLeft);
+    if (targetScrollTop > maxScrollTop) targetScrollTop = Math.max(0, maxScrollTop);
+    
+    // 应用滚动
+    container.scrollLeft = targetScrollLeft;
+    container.scrollTop = targetScrollTop;
+  }
+  
+  // 裁剪图片
+  function cropImage() {
+    if (!state.imgLoaded) {
+      alert('请先加载图片');
+      return;
+    }
+    
+    var outCanvas = document.createElement('canvas');
+    outCanvas.width = CONSTANTS.OUT_W;
+    outCanvas.height = CONSTANTS.OUT_H;
+    var octx = outCanvas.getContext('2d');
+    
+    // 计算原图上对应的裁剪区域
+    var originalX = Math.round(state.box.x * state.scaleRatio);
+    var originalY = Math.round(state.box.y * state.scaleRatio);
+    var originalW = Math.round(state.box.w * state.scaleRatio);
+    var originalH = Math.round(state.box.h * state.scaleRatio);
+    
+    // 使用原始图片进行裁剪，保证最高质量
+    octx.drawImage(
+      state.originalImg,
+      originalX, originalY, originalW, originalH,
+      0, 0, CONSTANTS.OUT_W, CONSTANTS.OUT_H
+    );
+    
+    // 在预览画布显示
+    elements.pctx.clearRect(0, 0, elements.preview.width, elements.preview.height);
+    elements.pctx.drawImage(outCanvas, 0, 0);
+    
+    // 生成下载链接 - 兼容IE11
+    if (outCanvas.toBlob) {
+      outCanvas.toBlob(function(blob) {
+        createDownloadLink(blob);
+      }, 'image/png');
+    } else {
+      // IE11 fallback
+      var dataURL = outCanvas.toDataURL('image/png');
+      var binStr = atob(dataURL.split(',')[1]);
+      var arr = new Uint8Array(binStr.length);
+      for (var i = 0; i < binStr.length; i++) {
+        arr[i] = binStr.charCodeAt(i);
+      }
+      var blob = new Blob([arr], {type: 'image/png'});
+      createDownloadLink(blob);
+    }
+  }
+  
+  // 创建下载链接
+  function createDownloadLink(blob) {
+    // 检查是否支持URL.createObjectURL
+    if (window.URL && URL.createObjectURL) {
+      var url = URL.createObjectURL(blob);
+      elements.dl.href = url;
+      elements.dl.download = 'passport.png';
+    } else {
+      // IE10以下不支持download属性，提示用户右键保存
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        elements.dl.href = e.target.result;
+        elements.dl.onclick = function() {
+          alert('请右键点击图片，选择"另存为..."保存图片');
+          return false;
+        };
+      };
+      reader.readAsDataURL(blob);
+    }
+  }
+  
+  // 返回公共API
+  return {
+    init: init
+  };
+})();
+
+// 初始化应用
+if (document.addEventListener) {
+  document.addEventListener('DOMContentLoaded', function() {
+    PhotoCropper.init();
+  });
+} else {
+  // IE8及以下兼容
+  window.onload = function() {
+    PhotoCropper.init();
+  };
+}
+</script>
+</body>
+</html>

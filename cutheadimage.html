@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>固定比例（不可变形）可移动/等比缩放裁剪框示例</title>
+<style>
+  body { font-family: "Microsoft YaHei", Arial; padding:20px; background:#fafafa; }
+  h2 { margin-bottom: 12px; }
+  #container { position: relative; display: inline-block; border:1px solid #ccc; background:#fff; }
+  #sourceImg { display:block; max-width:800px; max-height:600px; }
+  /* 裁剪框样式 */
+  #cropBox {
+    position: absolute;
+    border: 2px dashed red;
+    background: rgba(255,0,0,0.06);
+    box-sizing: border-box;
+    touch-action: none;
+  }
+  /* 四角手柄 */
+  .handle {
+    position:absolute;
+    width:12px; height:12px;
+    background:red; border-radius:2px;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.7) inset;
+  }
+  .tl { left:-6px; top:-6px; cursor:nwse-resize; }
+  .tr { right:-6px; top:-6px; cursor:nesw-resize; transform: rotate(90deg); }
+  .bl { left:-6px; bottom:-6px; cursor:nesw-resize; transform: rotate(270deg); }
+  .br { right:-6px; bottom:-6px; cursor:nwse-resize; }
+  /* 按钮和输出 */
+  button { margin-top:12px; padding:6px 12px; }
+  #resultCanvas { display:block; margin-top:12px; border:1px solid #999; }
+  #downloadLink { display:inline-block; margin-top:8px; }
+  .note { font-size:12px; color:#666; margin-top:8px; }
+</style>
+</head>
+<body>
+  <h2>一寸照片裁剪（固定长宽比）工具</h2>
+
+  <input type="file" id="fileInput" accept="image/*"><br>
+  <div class="note">裁剪框保持比例（不可变形），可移动与等比缩放。</div>
+  <br>
+
+  <div id="container">
+    <img id="sourceImg" alt="请先选择图片">
+    <!-- 裁剪框 -->
+    <div id="cropBox" style="display:none">
+      <div class="handle tl"></div>
+      <div class="handle tr"></div>
+      <div class="handle bl"></div>
+      <div class="handle br"></div>
+    </div>
+  </div>
+
+  <br>
+  <button id="cropBtn">裁剪并生成一寸（295×413 px）</button>
+  <a id="downloadLink" download="passport_photo.png" style="display:none">下载裁剪结果</a>
+
+  <canvas id="resultCanvas" width="295" height="413"></canvas>
+
+<script>
+/* ========== 配置 ========== */
+const OUTPUT_W = 295; // 输出一寸宽（px）
+const OUTPUT_H = 413; // 输出一寸高（px）
+const RATIO = OUTPUT_W / OUTPUT_H; // 固定长宽比
+
+const fileInput = document.getElementById('fileInput');
+const sourceImg = document.getElementById('sourceImg');
+const container = document.getElementById('container');
+const cropBox = document.getElementById('cropBox');
+const handles = {
+  tl: cropBox.querySelector('.tl'),
+  tr: cropBox.querySelector('.tr'),
+  bl: cropBox.querySelector('.bl'),
+  br: cropBox.querySelector('.br')
+};
+const cropBtn = document.getElementById('cropBtn');
+const resultCanvas = document.getElementById('resultCanvas');
+const downloadLink = document.getElementById('downloadLink');
+
+let imgNaturalW = 0, imgNaturalH = 0; // 原始像素大小
+let draggingState = null; // null | {type:'move'|'tl'|'tr'|'bl'|'br', startX, startY, startBox}
+const MIN_PIX = 40; // 最小裁剪框宽度（显示像素）保护
+
+// 当前裁剪框（以图片显示尺寸为单位）
+// 使用 left/top/width/height（均为 px，相对于图片左上角）
+let box = { left: 0, top: 0, width: 0, height: 0 };
+
+/* ---------- 选择图片 ---------- */
+fileInput.addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  sourceImg.src = url;
+  sourceImg.style.maxWidth = '800px'; // 限制显示宽度（可按需调整）
+  cropBox.style.display = 'none';
+  downloadLink.style.display = 'none';
+});
+
+// 当图片加载完成，初始化裁剪框（按显示尺寸）
+sourceImg.addEventListener('load', () => {
+  imgNaturalW = sourceImg.naturalWidth;
+  imgNaturalH = sourceImg.naturalHeight;
+
+  // 给容器设置与图片同样尺寸（避免布局问题）
+  container.style.width = sourceImg.width + 'px';
+  container.style.height = sourceImg.height + 'px';
+
+  // 初始化裁剪框为图片显示宽度的30%，保持比例
+  const initW = Math.max(80, sourceImg.width * 0.3);
+  const initH = initW / RATIO;
+  box.width = initW;
+  box.height = initH;
+  box.left = Math.max(0, (sourceImg.width - initW) / 2);
+  box.top = Math.max(0, (sourceImg.height - initH) / 2);
+
+  applyBoxToDOM();
+  cropBox.style.display = 'block';
+});
+
+/* ---------- 辅助函数：更新 DOM (裁剪框显示) ---------- */
+function applyBoxToDOM() {
+  cropBox.style.left = box.left + 'px';
+  cropBox.style.top = box.top + 'px';
+  cropBox.style.width = box.width + 'px';
+  cropBox.style.height = box.height + 'px';
+}
+
+/* ---------- 鼠标事件统一处理 ---------- */
+// 计算相对图片显示区域的坐标（以 px 为单位）
+function clientToImagePos(clientX, clientY) {
+  const rect = sourceImg.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  // 限制到图片内（允许少量越界修正）
+  return { x: x, y: y };
+}
+
+// 开始拖拽（移动或缩放）
+function startDrag(type, ev) {
+  ev.preventDefault();
+  const p = clientToImagePos(ev.clientX, ev.clientY);
+  draggingState = {
+    type: type,
+    startX: p.x,
+    startY: p.y,
+    startBox: { ...box }
+  };
+  // 添加临时样式避免选中文本
+  document.body.style.userSelect = 'none';
+}
+
+// 结束拖拽
+function endDrag() {
+  draggingState = null;
+  document.body.style.userSelect = '';
+}
+
+// 处理移动与等比缩放
+function onPointerMove(ev) {
+  if (!draggingState) return;
+  ev.preventDefault();
+  const p = clientToImagePos(ev.clientX, ev.clientY);
+  const dx = p.x - draggingState.startX;
+  const dy = p.y - draggingState.startY;
+  const sb = draggingState.startBox;
+
+  if (draggingState.type === 'move') {
+    // 移动：直接平移，边界限制
+    let nx = sb.left + dx;
+    let ny = sb.top + dy;
+    nx = Math.max(0, Math.min(nx, sourceImg.width - sb.width));
+    ny = Math.max(0, Math.min(ny, sourceImg.height - sb.height));
+    box.left = nx; box.top = ny;
+  } else {
+    // 缩放：根据哪个角决定方向，但始终保持比例
+    // 计算基于水平位移来决定新宽度（也可用垂直，但使用水平更直观）
+    let newW = sb.width;
+    let newH = sb.height;
+    let newLeft = sb.left;
+    let newTop = sb.top;
+
+    if (draggingState.type === 'br') {
+      newW = sb.width + dx;
+      if (newW < MIN_PIX) newW = MIN_PIX;
+      newH = newW / RATIO;
+      // 保证不超出图片边界
+      if (newLeft + newW > sourceImg.width) {
+        newW = sourceImg.width - newLeft;
+        newH = newW / RATIO;
+      }
+      if (newTop + newH > sourceImg.height) {
+        // 如果高度超出底部，则依据底部边界修正高度/宽度
+        newH = sourceImg.height - newTop;
+        newW = newH * RATIO;
+      }
+    } else if (draggingState.type === 'bl') {
+      // 左下角：宽度按 -dx 变化，左边跟随变化
+      newW = sb.width - dx;
+      if (newW < MIN_PIX) newW = MIN_PIX;
+      newH = newW / RATIO;
+      newLeft = sb.left + (sb.width - newW);
+      // 边界修正：左边不能小于 0
+      if (newLeft < 0) {
+        newLeft = 0;
+        newW = sb.left + sb.width; // original right boundary
+        newH = newW / RATIO;
+      }
+      // 底部边界
+      if (newTop + newH > sourceImg.height) {
+        newH = sourceImg.height - newTop;
+        newW = newH * RATIO;
+        newLeft = sb.left + (sb.width - newW);
+        if (newLeft < 0) { newLeft = 0; }
+      }
+    } else if (draggingState.type === 'tr') {
+      // 右上角：宽度按 +dx 变化，top 要向上调整以保持底部不动（等比）
+      newW = sb.width + dx;
+      if (newW < MIN_PIX) newW = MIN_PIX;
+      newH = newW / RATIO;
+      newTop = sb.top - (newH - sb.height);
+      // top 边界
+      if (newTop < 0) {
+        newTop = 0;
+        newH = sb.top + sb.height;
+        newW = newH * RATIO;
+      }
+      // 右边界
+      if (sb.left + newW > sourceImg.width) {
+        newW = sourceImg.width - sb.left;
+        newH = newW / RATIO;
+        newTop = sb.top - (newH - sb.height);
+        if (newTop < 0) newTop = 0;
+      }
+    } else if (draggingState.type === 'tl') {
+      // 左上角：宽度按 -dx 变化，left/top 都要变化
+      newW = sb.width - dx;
+      if (newW < MIN_PIX) newW = MIN_PIX;
+      newH = newW / RATIO;
+      newLeft = sb.left + (sb.width - newW);
+      newTop = sb.top + (sb.height - newH);
+      if (newLeft < 0) {
+        newLeft = 0;
+        newW = sb.left + sb.width;
+        newH = newW / RATIO;
+        newTop = sb.top + (sb.height - newH);
+      }
+      if (newTop < 0) {
+        newTop = 0;
+        newH = sb.top + sb.height;
+        newW = newH * RATIO;
+        newLeft = sb.left + (sb.width - newW);
+        if (newLeft < 0) newLeft = 0;
+      }
+    }
+
+    // 再次保证宽高不超图、并且宽高为正
+    newW = Math.max(MIN_PIX, Math.min(newW, sourceImg.width));
+    newH = Math.max(MIN_PIX / RATIO, Math.min(newH, sourceImg.height));
+    if (newLeft + newW > sourceImg.width) newLeft = sourceImg.width - newW;
+    if (newTop + newH > sourceImg.height) newTop = sourceImg.height - newH;
+    if (newLeft < 0) newLeft = 0;
+    if (newTop < 0) newTop = 0;
+
+    box.left = newLeft;
+    box.top = newTop;
+    box.width = newW;
+    box.height = newH;
+  }
+
+  applyBoxToDOM();
+}
+
+// 事件绑定：移动与缩放
+// 鼠标按下：若按在 handle 上则开始相应的缩放，否则开始移动
+cropBox.addEventListener('mousedown', e => {
+  // 若点击在手柄上，识别是哪一个
+  const cls = e.target.classList;
+  if (cls.contains('tl')) startDrag('tl', e);
+  else if (cls.contains('tr')) startDrag('tr', e);
+  else if (cls.contains('bl')) startDrag('bl', e);
+  else if (cls.contains('br')) startDrag('br', e);
+  else startDrag('move', e);
+});
+
+// 支持直接点击手柄（不在 cropBox 内点击）
+handles.tl.addEventListener('mousedown', e => startDrag('tl', e));
+handles.tr.addEventListener('mousedown', e => startDrag('tr', e));
+handles.bl.addEventListener('mousedown', e => startDrag('bl', e));
+handles.br.addEventListener('mousedown', e => startDrag('br', e));
+
+// 全局 mousemove / mouseup
+window.addEventListener('mousemove', onPointerMove);
+window.addEventListener('mouseup', endDrag);
+
+// 触摸事件支持（移动端）
+cropBox.addEventListener('touchstart', e => {
+  const t = e.touches[0];
+  // 判断触点在手柄上
+  const target = e.target;
+  if (target.classList.contains('tl')) startDrag('tl', t);
+  else if (target.classList.contains('tr')) startDrag('tr', t);
+  else if (target.classList.contains('bl')) startDrag('bl', t);
+  else if (target.classList.contains('br')) startDrag('br', t);
+  else startDrag('move', t);
+});
+window.addEventListener('touchmove', e => {
+  const t = e.touches[0];
+  onPointerMove(t);
+});
+window.addEventListener('touchend', endDrag);
+
+/* ---------- 裁剪到 Canvas 并下载 ---------- */
+cropBtn.addEventListener('click', () => {
+  if (!sourceImg.src) return;
+
+  // 计算显示尺寸到原始尺寸的比例
+  const scaleX = imgNaturalW / sourceImg.width;
+  const scaleY = imgNaturalH / sourceImg.height;
+
+  // 把显示坐标映射为原图像素坐标
+  const sx = Math.round(box.left * scaleX);
+  const sy = Math.round(box.top * scaleY);
+  const sw = Math.round(box.width * scaleX);
+  const sh = Math.round(box.height * scaleY);
+
+  // 绘制到输出 Canvas（输出为 OUTPUT_W x OUTPUT_H）
+  const ctx = resultCanvas.getContext('2d');
+  ctx.clearRect(0,0,OUTPUT_W, OUTPUT_H);
+  ctx.drawImage(sourceImg, sx, sy, sw, sh, 0, 0, OUTPUT_W, OUTPUT_H);
+
+  // 生成下载链接
+  resultCanvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    downloadLink.href = url;
+    downloadLink.style.display = 'inline-block';
+  }, 'image/png');
+});
+
+/* ========== 结束 ========== */
+</script>
+</body>
+</html>
